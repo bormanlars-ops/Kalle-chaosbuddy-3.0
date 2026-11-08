@@ -61,7 +61,7 @@ replace(widget_dialog,
 
 manifest=root/"app/src/main/AndroidManifest.xml"
 replace(manifest,'android:versionCode="30100" android:versionName="3.1.0"','android:versionCode="30300" android:versionName="3.3.0-test"')
-replace(manifest,'android:label="Kalle – Chaosbuddy 3.1.0"','android:label="Kalle 3.3 Revier-Test"')
+replace(manifest,'android:label="Kalle – Chaosbuddy 3.1.0"','android:label="Kalle 3.3 Revier-Test"',2)
 replace(manifest,'<activity android:name=".MainActivity"',
  '''<activity android:name=".KalleRevierActivity" android:exported="false" android:screenOrientation="sensorLandscape" />
         <activity android:name=".MainActivity"''')
