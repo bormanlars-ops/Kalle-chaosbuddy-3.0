@@ -1,6 +1,11 @@
 name: Kalle 3.1.0 - APK aus ZIP bauen
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-kalle-from-zip.yml'
+      - 'Kalle-Chaosbuddy-3.1.0-CI-Source.zip'
   workflow_dispatch:
 
 permissions:
