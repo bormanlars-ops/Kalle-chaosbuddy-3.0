@@ -1,0 +1,100 @@
+name: Kalle Chaosbuddy 3.0.4 – Original-Update als Test-APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-kalle-304.yml'
+      - '.github/patches/304/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Basis-Quellprojekt entpacken
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s Kalle-Chaosbuddy-3.1.0-CI-Source.zip
+          unzip -q Kalle-Chaosbuddy-3.1.0-CI-Source.zip -d _source
+          test -s _source/Kalle-Chaosbuddy-3.1.0/settings.gradle
+
+      - name: Exakte 3.0.4-Quellen SHA256-geprueft wiederherstellen
+        shell: bash
+        working-directory: _source/Kalle-Chaosbuddy-3.1.0
+        run: |
+          set -euo pipefail
+          python3 ../../.github/patches/304/apply304.py
+          test -s app/src/main/java/de/boyka/kallebuddy/SnoozeReaction.java
+          grep -F "class SnoozeReaction" app/src/main/java/de/boyka/kallebuddy/SnoozeReaction.java
+          grep -F "versionCode 30009" app/build.gradle
+          grep -F "applicationId 'de.boyka.kallebuddy.test304'" app/build.gradle
+          ! grep -R -n 'RecognizerIntent\|ACTION_RECOGNIZE_SPEECH\|android.permission.RECORD_AUDIO' app/src/main/
+
+      - name: Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+
+      - name: Build installierbare Debug-APK
+        shell: bash
+        working-directory: _source/Kalle-Chaosbuddy-3.1.0
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace :app:assembleDebug 2>&1 | tee /tmp/kalle304-build.log
+
+      - name: APK und Signatur verifizieren
+        shell: bash
+        working-directory: _source/Kalle-Chaosbuddy-3.1.0
+        run: |
+          set -euo pipefail
+          apk=app/build/outputs/apk/debug/app-debug.apk
+          test -s "$apk"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify "$apk"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$apk" | tee /tmp/kalle304-badging.txt
+          grep -F "package: name='de.boyka.kallebuddy.test304' versionCode='30009'" /tmp/kalle304-badging.txt
+          grep -F "application-label:'Kalle 3.0.4 Test'" /tmp/kalle304-badging.txt
+          mkdir -p dist
+          cp "$apk" dist/Kalle-Chaosbuddy-3.0.4-TEST-PARALLEL.apk
+          sha256sum dist/*.apk > dist/SHA256SUMS.txt
+
+      - name: APK-Download bereitstellen
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: Kalle-Chaosbuddy-3.0.4-TEST-PARALLEL-APK
+          path: _source/Kalle-Chaosbuddy-3.1.0/dist/
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Build-Logs bei Fehlern
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kalle-304-Fehlerlogs
+          path: /tmp/kalle304-build.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Zusammenfassung
+        if: always()
+        run: |
+          echo 'Patch: exakte 3.0.4-Dateien SHA256-geprueft aus bestehendem 3.1.0-CI-Archiv wiederhergestellt.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Testpaket test304: bestehende 3.0.3 wird NICHT überschrieben.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Private Signiersicherung wird weder verwendet noch hochgeladen.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Debug-Signatur: nicht fuer direktes Update der originalen 3.0.3 verwendbar.' >> "$GITHUB_STEP_SUMMARY"
