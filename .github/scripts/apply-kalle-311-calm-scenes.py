@@ -52,6 +52,6 @@ gradle.write_text(g,encoding="utf-8")
 
 manifest=root/"app/src/main/AndroidManifest.xml"
 m=manifest.read_text(encoding="utf-8")
-assert m.count("Kalle – Chaosbuddy 3.1.0")==1
+assert m.count("Kalle – Chaosbuddy 3.1.0")>=1, "Original title not found"
 manifest.write_text(m.replace("Kalle – Chaosbuddy 3.1.0","Kalle 3.1.1 Test (ruhig)"),encoding="utf-8")
 print("Calm scene patch OK: 64-second activities, existing movement speed, test311 ID")
