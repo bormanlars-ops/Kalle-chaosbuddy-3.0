@@ -1,0 +1,95 @@
+name: Kalle 3.1.0 - APK aus ZIP bauen
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v7
+
+      - name: ZIP auspacken
+        run: |
+          test -f Kalle-Chaosbuddy-3.1.0-CI-Source.zip || { echo 'Kalle-Chaosbuddy-3.1.0-CI-Source.zip fehlt im Repository-Hauptverzeichnis'; exit 1; }
+          mkdir -p _source
+          unzip -q Kalle-Chaosbuddy-3.1.0-CI-Source.zip -d _source
+          test -f _source/Kalle-Chaosbuddy-3.1.0/settings.gradle
+          test -f _source/Kalle-Chaosbuddy-3.1.0/gradlew
+
+      - name: JDK 21 installieren
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Android SDK installieren
+        uses: android-actions/setup-android@v4
+        with:
+          packages: |
+            platform-tools
+            platforms;android-35
+            build-tools;35.0.0
+
+      - name: APKs kompilieren
+        working-directory: _source/Kalle-Chaosbuddy-3.1.0
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace assembleDebug assembleRelease
+
+      - name: Debug-APK bereitstellen (nicht updatefaehig)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kalle-3.1.0-Debug-NICHT-UPDATEFAEHIG
+          path: _source/Kalle-Chaosbuddy-3.1.0/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+      - name: Optional mit Originalschluessel signieren
+        working-directory: _source/Kalle-Chaosbuddy-3.1.0
+        env:
+          KALLE_KEYSTORE_B64: ${{ secrets.KALLE_KEYSTORE_B64 }}
+          KALLE_STOREPASS: ${{ secrets.KALLE_STOREPASS }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$KALLE_KEYSTORE_B64" || -z "$KALLE_STOREPASS" ]]; then
+            echo 'Kein Originalschluessel als Repository Secret hinterlegt: Nur Debug-APK.'
+            exit 0
+          fi
+          KS="$RUNNER_TEMP/kalle-signing.p12"
+          trap 'rm -f "$KS"' EXIT
+          printf '%s' "$KALLE_KEYSTORE_B64" | base64 --decode > "$KS"
+          chmod 600 "$KS"
+          SDK_TOOLS="$ANDROID_HOME/build-tools/35.0.0"
+          UNSIGNED='app/build/outputs/apk/release/app-release-unsigned.apk'
+          test -s "$UNSIGNED"
+          mkdir -p dist
+          "$SDK_TOOLS/zipalign" -f -p 4 "$UNSIGNED" "$RUNNER_TEMP/kalle-aligned.apk"
+          "$SDK_TOOLS/apksigner" sign --ks "$KS" --ks-type PKCS12 --ks-key-alias kalle --ks-pass env:KALLE_STOREPASS --v4-signing-enabled false --out dist/Kalle-Chaosbuddy-3.1.0.apk "$RUNNER_TEMP/kalle-aligned.apk"
+          "$SDK_TOOLS/apksigner" verify --verbose dist/Kalle-Chaosbuddy-3.1.0.apk
+          ACTUAL="$("$SDK_TOOLS/apksigner" verify --print-certs dist/Kalle-Chaosbuddy-3.1.0.apk | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | tr -d ':\r' | tr '[:lower:]' '[:upper:]')"
+          EXPECTED='867D34ED80F46A07A49FEBACCC0AA7D3EA99517BF85C9FE13BDAEE1C20256BB2'
+          [[ "$ACTUAL" == "$EXPECTED" ]] || { echo 'Falsches Signaturzertifikat!' >&2; exit 1; }
+          BADGING="$("$SDK_TOOLS/aapt" dump badging dist/Kalle-Chaosbuddy-3.1.0.apk | head -n 1)"
+          [[ "$BADGING" == *"name='de.boyka.kallebuddy'"* && "$BADGING" == *"versionCode='30100'"* ]] || { echo 'Paket/Version stimmt nicht!' >&2; exit 1; }
+          sha256sum dist/Kalle-Chaosbuddy-3.1.0.apk > dist/SHA256SUMS.txt
+
+      - name: Updatefaehige APK bereitstellen, falls signiert
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kalle-3.1.0-Original-signiert
+          path: _source/Kalle-Chaosbuddy-3.1.0/dist/
+          if-no-files-found: ignore
+
+      - name: Java-Tests
+        working-directory: _source/Kalle-Chaosbuddy-3.1.0
+        run: |
+          bash ./tests31/run-pure-tests.sh
+          ./gradlew --no-daemon --stacktrace testDebugUnitTest
