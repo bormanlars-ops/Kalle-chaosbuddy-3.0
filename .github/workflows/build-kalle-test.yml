@@ -1,0 +1,91 @@
+name: Kalle 3.1.0 - separate Test-APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-kalle-test.yml'
+      - 'Kalle-Chaosbuddy-3.1.0-CI-Source.zip'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test_apk:
+    name: Separate Kalle-Test-APK bauen
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Quellprojekt entpacken
+        run: |
+          set -euo pipefail
+          test -f Kalle-Chaosbuddy-3.1.0-CI-Source.zip
+          unzip -q Kalle-Chaosbuddy-3.1.0-CI-Source.zip -d _source
+          test -f _source/Kalle-Chaosbuddy-3.1.0/app/build.gradle
+          test -f _source/Kalle-Chaosbuddy-3.1.0/app/src/main/AndroidManifest.xml
+
+      - name: Test-App-Kennung setzen (Original-ZIP bleibt unveraendert)
+        working-directory: _source/Kalle-Chaosbuddy-3.1.0
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          gradle=Path('app/build.gradle')
+          original="applicationId 'de.boyka.kallebuddy'"
+          replacement="applicationId 'de.boyka.kallebuddy.test31'"
+          text=gradle.read_text(encoding='utf-8')
+          assert text.count(original)==1, 'Erwartete Original-Paketkennung fehlt oder ist mehrfach vorhanden'
+          gradle.write_text(text.replace(original,replacement),encoding='utf-8')
+          manifest=Path('app/src/main/AndroidManifest.xml')
+          data=manifest.read_text(encoding='utf-8')
+          assert 'Kalle – Chaosbuddy 3.1.0' in data, 'Erwartete Original-App-Bezeichnung fehlt'
+          manifest.write_text(data.replace('Kalle – Chaosbuddy 3.1.0','Kalle 3.1.0 Test'),encoding='utf-8')
+          print('Paketname: de.boyka.kallebuddy.test31; Anzeigename: Kalle 3.1.0 Test')
+          PY
+
+      - name: JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+
+      - name: Installierbare Test-APK kompilieren
+        working-directory: _source/Kalle-Chaosbuddy-3.1.0
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace :app:assembleDebug
+
+      - name: Testkennung und APK-Signatur kontrollieren
+        working-directory: _source/Kalle-Chaosbuddy-3.1.0
+        run: |
+          set -euo pipefail
+          apk='app/build/outputs/apk/debug/app-debug.apk'
+          test -s "$apk"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify "$apk"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$apk" | tee /tmp/kalle-test-badging.txt
+          grep -F "package: name='de.boyka.kallebuddy.test31'" /tmp/kalle-test-badging.txt
+          grep -F "application-label:'Kalle 3.1.0 Test'" /tmp/kalle-test-badging.txt
+          mkdir -p dist
+          cp "$apk" dist/Kalle-Chaosbuddy-3.1.0-TEST-PARALLEL.apk
+          sha256sum dist/Kalle-Chaosbuddy-3.1.0-TEST-PARALLEL.apk > dist/SHA256SUMS.txt
+
+      - name: APK zum Download bereitstellen
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kalle-3.1.0-TEST-PARALLEL-APK
+          path: _source/Kalle-Chaosbuddy-3.1.0/dist/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Build-Zusammenfassung
+        if: always()
+        run: |
+          echo 'Hinweis: Separate Debug-Testversion. Bestehende Kalle-App wird NICHT ersetzt.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Die 4 fehlgeschlagenen Unit-Tests aus dem Originalprojekt sind damit NICHT behoben.' >> "$GITHUB_STEP_SUMMARY"
