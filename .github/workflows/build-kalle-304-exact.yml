@@ -1,0 +1,111 @@
+name: Kalle Chaosbuddy 3.0.4 - Original 3.0.3 verbessert
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Kalle-Chaosbuddy-3.0.4-Quellprojekt.zip'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    name: Kalle 3.0.4 - separate Test-APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Exact 3.0.3-based source unzip
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s Kalle-Chaosbuddy-3.0.4-Quellprojekt.zip || { echo "::error::Bitte Kalle-Chaosbuddy-3.0.4-Quellprojekt.zip im Repository-Hauptverzeichnis hochladen."; exit 1; }
+          unzip -q Kalle-Chaosbuddy-3.0.4-Quellprojekt.zip -d _build
+          test -s _build/Kalle-Chaosbuddy-3.0.4/app/src/main/java/de/boyka/kallebuddy/SnoozeReaction.java
+          test -s _build/Kalle-Chaosbuddy-3.0.4/app/src/main/java/de/boyka/kallebuddy/SpriteRig.java
+          test -s _build/Kalle-Chaosbuddy-3.0.4/app/build.gradle
+          if find _build -type f \( -name '*.jks' -o -name '*.keystore' -o -name '*.p12' -o -name '*.pfx' \) | grep -q .; then
+            echo '::error::No signing material may be committed to public GitHub'
+            exit 1
+          fi
+
+      - name: Separate preview package; original stays installed
+        shell: bash
+        working-directory: _build/Kalle-Chaosbuddy-3.0.4
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('app/build.gradle')
+          s=p.read_text()
+          old="applicationId 'de.boyka.kallebuddy'"
+          assert s.count(old)==1
+          p.write_text(s.replace(old,"applicationId 'de.boyka.kallebuddy.test304'"))
+          p=Path('app/src/main/AndroidManifest.xml')
+          s=p.read_text()
+          old='Kalle – Chaosbuddy 3.0.4'
+          assert s.count(old)==2
+          p.write_text(s.replace(old,'Kalle 3.0.4 Test'))
+          print('Parallel debug test: de.boyka.kallebuddy.test304')
+          PY
+
+      - name: Install Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+
+      - name: Build Android debug APK
+        shell: bash
+        working-directory: _build/Kalle-Chaosbuddy-3.0.4
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace :app:assembleDebug 2>&1 | tee /tmp/kalle304-build.log
+
+      - name: Verify APK signature, package, version and label
+        shell: bash
+        working-directory: _build/Kalle-Chaosbuddy-3.0.4
+        run: |
+          set -euo pipefail
+          apk=app/build/outputs/apk/debug/app-debug.apk
+          test -s "$apk"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify "$apk"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$apk" | tee /tmp/kalle304-badging.txt
+          grep -F "package: name='de.boyka.kallebuddy.test304' versionCode='30009'" /tmp/kalle304-badging.txt
+          grep -F "application-label:'Kalle 3.0.4 Test'" /tmp/kalle304-badging.txt
+          mkdir -p dist
+          cp "$apk" dist/Kalle-Chaosbuddy-3.0.4-TEST-PARALLEL.apk
+          sha256sum dist/*.apk > dist/SHA256SUMS.txt
+
+      - name: Upload test APK
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: Kalle-Chaosbuddy-3.0.4-TEST-PARALLEL-APK
+          path: _build/Kalle-Chaosbuddy-3.0.4/dist/
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Upload failure logs
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: Kalle-304-Buildfehler
+          path: /tmp/kalle304-build.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Build summary
+        if: always()
+        run: |
+          echo 'Based on exact Chaosbuddy 3.0.3 source, with targeted 3.0.4 source modifications.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Separate debug test cannot overwrite original 3.0.3; normal release update needs original private signing key.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'No private signers accessed or uploaded. Android hardware and existing legacy unit tests still need testing.' >> "$GITHUB_STEP_SUMMARY"
