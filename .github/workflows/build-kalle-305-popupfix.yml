@@ -1,0 +1,101 @@
+name: Chaosbuddy 3.0.5 - Pop-up Reparaturtest
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-kalle-305-popupfix.yml'
+      - '.github/patches/305/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Kalle 3.0.5 Popup-Permissions und Snooze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Original-Sources entpacken und 3.0.4 wiederherstellen
+        shell: bash
+        run: |
+          set -euo pipefail
+          unzip -q Kalle-Chaosbuddy-3.1.0-CI-Source.zip -d _source
+          cd _source/Kalle-Chaosbuddy-3.1.0
+          python3 ../../.github/patches/304/apply304.py
+          test -s app/src/main/java/de/boyka/kallebuddy/SnoozeReaction.java
+
+      - name: Pop-up-Reparatur und Statusanzeige
+        shell: bash
+        working-directory: _source/Kalle-Chaosbuddy-3.1.0
+        run: |
+          set -euo pipefail
+          python3 ../../.github/patches/305/apply305.py
+          cp ../../.github/patches/305/PopupCheck.java app/src/main/java/de/boyka/kallebuddy/PopupCheck.java
+          grep -F 'applicationId' app/build.gradle
+          grep -F 'static void snoozed(Context c,Mission m)' app/src/main/java/de/boyka/kallebuddy/AlarmService.java
+          grep -F 'overlayPreview(Activity a)' app/src/main/java/de/boyka/kallebuddy/PopupCheck.java
+          ! grep -R -nE 'RecognizerIntent|ACTION_RECOGNIZE_SPEECH|android.permission.RECORD_AUDIO' app/src/main
+
+      - name: Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+
+      - name: Android Debug APK erstellen
+        shell: bash
+        working-directory: _source/Kalle-Chaosbuddy-3.1.0
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace :app:assembleDebug 2>&1 | tee /tmp/kalle305-build.log
+
+      - name: Signatur und Paketkennung verifizieren
+        shell: bash
+        working-directory: _source/Kalle-Chaosbuddy-3.1.0
+        run: |
+          set -euo pipefail
+          apk=app/build/outputs/apk/debug/app-debug.apk
+          test -s "$apk"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify "$apk"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$apk" | tee /tmp/kalle305-badging.txt
+          grep -F "package: name='de.boyka.kallebuddy.test305' versionCode='30010'" /tmp/kalle305-badging.txt
+          grep -F "application-label:'Kalle 3.0.5 Pop-up-Test'" /tmp/kalle305-badging.txt
+          mkdir -p dist
+          cp "$apk" dist/Kalle-Chaosbuddy-3.0.5-POPUP-TEST.apk
+          sha256sum dist/*.apk > dist/SHA256SUMS.txt
+
+      - name: APK bereitstellen
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kalle-Chaosbuddy-3.0.5-POPUP-TEST-APK
+          path: _source/Kalle-Chaosbuddy-3.1.0/dist/
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Fehlerlogs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kalle-305-Buildfehler
+          path: /tmp/kalle305-build.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Sicherheits-Hinweis
+        if: always()
+        run: |
+          echo 'Separates Android-Testpaket test305, private Signiersicherung niemals benutzt oder hochgeladen.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'OS Berechtigungen fuer neue App muessen separat durch Nutzer erteilt werden.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Erfolgreicher Build beweist keinen echten Samsung-Pop-up ohne Freigaben und Hardwaretest.' >> "$GITHUB_STEP_SUMMARY"
