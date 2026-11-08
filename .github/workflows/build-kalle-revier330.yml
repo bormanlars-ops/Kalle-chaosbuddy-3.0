@@ -1,0 +1,110 @@
+name: Kalle Chaosbuddy 3.3.0 - echtes Revier ohne Widget-Teleport
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-kalle-revier330.yml'
+      - '.github/patches/330/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout public project files
+        uses: actions/checkout@v4
+
+      - name: Extract original 3.1.0 source (no signing backup)
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s Kalle-Chaosbuddy-3.1.0-CI-Source.zip
+          unzip -q Kalle-Chaosbuddy-3.1.0-CI-Source.zip -d _source
+          test -s _source/Kalle-Chaosbuddy-3.1.0/app/build.gradle
+
+      - name: Install Revier movement, interactive scene and one-frame widget
+        shell: bash
+        working-directory: _source
+        run: |
+          set -euo pipefail
+          python3 ../.github/patches/330/apply-revier33.py
+          cp ../.github/patches/330/KalleRevierActivity.java Kalle-Chaosbuddy-3.1.0/app/src/main/java/de/boyka/kallebuddy/KalleRevierActivity.java
+          cp ../.github/patches/330/RevierMotion.java Kalle-Chaosbuddy-3.1.0/app/src/main/java/de/boyka/kallebuddy/RevierMotion.java
+          test -s Kalle-Chaosbuddy-3.1.0/app/src/main/java/de/boyka/kallebuddy/KalleRevierActivity.java
+          echo 'Verify no microphone / voice recognizer / flipper loop'
+          ! grep -R -nE 'RecognizerIntent|ACTION_RECOGNIZE_SPEECH|android.permission.RECORD_AUDIO' Kalle-Chaosbuddy-3.1.0/app/src/main/
+          ! grep -n 'for(int scene=0;scene<WorldMotion.SCENES' Kalle-Chaosbuddy-3.1.0/app/src/main/java/de/boyka/kallebuddy/WorldViews.java
+
+      - name: Motion regression checks without Android
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/kallevm
+          javac -encoding UTF-8 -d /tmp/kallevm .github/patches/330/RevierMotion.java .github/patches/330/MotionProbe.java
+          java -cp /tmp/kallevm de.boyka.kallebuddy.MotionProbe
+
+      - name: Install Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+
+      - name: Build separate Revier 3.3.0 test APK
+        shell: bash
+        working-directory: _source/Kalle-Chaosbuddy-3.1.0
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace :app:assembleDebug 2>&1 | tee /tmp/kalle330-gradle.log
+
+      - name: Verify debug signature, package and launch activity
+        shell: bash
+        working-directory: _source/Kalle-Chaosbuddy-3.1.0
+        run: |
+          set -euo pipefail
+          apk=app/build/outputs/apk/debug/app-debug.apk
+          test -s "$apk"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify "$apk"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$apk" | tee /tmp/kalle330-badging.txt
+          grep -F "package: name='de.boyka.kallebuddy.revier33' versionCode='30300'" /tmp/kalle330-badging.txt
+          grep -F "application-label:'Kalle 3.3 Revier-Test'" /tmp/kalle330-badging.txt
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump xmltree "$apk" AndroidManifest.xml > /tmp/kalle330-manifest.txt
+          grep -F 'KalleRevierActivity' /tmp/kalle330-manifest.txt
+          mkdir -p dist
+          cp "$apk" dist/Kalle-Chaosbuddy-3.3.0-REVlER-TEST.apk
+          sha256sum dist/*.apk > dist/SHA256SUMS.txt
+
+      - name: Publish the debug APK
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: KALLE-CHAOSBUDDY-3.3.0-REVlER-TEST-APK
+          path: _source/Kalle-Chaosbuddy-3.1.0/dist/
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Upload diagnostics if build failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kalle-330-build-logs
+          path: /tmp/kalle330-gradle.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Summary
+        if: always()
+        run: |
+          echo 'Test install package: de.boyka.kallebuddy.revier33. Does not modify original app.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'No signing backup uploaded or used. Android debug key is ephemeral.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Widget is intentionally static on home launcher; fluid autonomous animation ONLY in user-opened Revier.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Original project has known failing legacy unit tests; APK build does not prove runtime behavior.' >> "$GITHUB_STEP_SUMMARY"
