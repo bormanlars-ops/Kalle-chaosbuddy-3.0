@@ -1,0 +1,66 @@
+name: Kalle 3.1.1 - ruhige Szenen Test
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-kalle-test-calm.yml'
+      - '.github/scripts/apply-kalle-311-calm-scenes.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  android:
+    name: Kalle 3.1.1 - 64-Sekunden-Szenen
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Original-Projekt aus ZIP auspacken
+        run: |
+          set -euo pipefail
+          test -f Kalle-Chaosbuddy-3.1.0-CI-Source.zip
+          unzip -q Kalle-Chaosbuddy-3.1.0-CI-Source.zip -d _source
+          test -f _source/Kalle-Chaosbuddy-3.1.0/settings.gradle
+      - name: Separate Test-App mit langsameren Szenen vorbereiten
+        working-directory: _source
+        run: python3 ../.github/scripts/apply-kalle-311-calm-scenes.py
+      - name: Java 21 einrichten
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Android SDK einrichten
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+      - name: Debug-APK bauen
+        working-directory: _source/Kalle-Chaosbuddy-3.1.0
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace :app:assembleDebug
+      - name: Paketkennung Signatur und Label prüfen
+        working-directory: _source/Kalle-Chaosbuddy-3.1.0
+        run: |
+          set -euo pipefail
+          apk='app/build/outputs/apk/debug/app-debug.apk'
+          test -s "$apk"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify "$apk"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$apk" | tee /tmp/kalle311.txt
+          grep -F "package: name='de.boyka.kallebuddy.test311' versionCode='30101'" /tmp/kalle311.txt
+          grep -F "application-label:'Kalle 3.1.1 Test (ruhig)'" /tmp/kalle311.txt
+          mkdir -p dist
+          cp "$apk" dist/Kalle-3.1.1-TEST-ruhige-Szenen.apk
+          sha256sum dist/*.apk > dist/SHA256SUMS.txt
+      - name: Installierbare APK bereitstellen
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kalle-3.1.1-TEST-RUHIGE-SZENEN
+          path: _source/Kalle-Chaosbuddy-3.1.0/dist/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Hinweise
+        if: always()
+        run: |
+          echo 'Eigenständige Debug-App mit Paket-ID test311, ersetzt keine vorhandene Kalle-Version.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Szenenwechsel: 64 Sekunden; Animation innerhalb einer Szene weiterhin 100/125/200 ms pro Bild.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Die vier bereits bekannten 3.1.0-Testfehler bleiben noch offen; Hardwaretest nötig.' >> "$GITHUB_STEP_SUMMARY"
