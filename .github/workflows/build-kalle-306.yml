@@ -1,0 +1,118 @@
+name: "Kalle Chaosbuddy 3.0.6 – Android APK"
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/build-kalle-306.yml"
+      - ".github/patches/306/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build verified standalone Android 3.0.6 test APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout GitHub source
+        uses: actions/checkout@v4
+
+      - name: Reconstruct exact 3.0.6 sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          unzip -q Kalle-Chaosbuddy-3.1.0-CI-Source.zip -d _source
+          cd _source/Kalle-Chaosbuddy-3.1.0
+          python3 ../../.github/patches/304/apply304.py
+          python3 ../../.github/patches/306/apply306.py
+          grep -F "applicationId 'de.boyka.kallebuddy.test306'" app/build.gradle
+          grep -F "versionCode 30011" app/build.gradle
+          grep -F "AUF MORGEN VERSCHIEBEN" app/src/main/java/de/boyka/kallebuddy/MainActivity.java
+          grep -F "nextNagAt" app/src/main/java/de/boyka/kallebuddy/Scheduler.java
+
+      - name: Install JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Android SDK 35
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+
+      - name: Compile a genuine Android APK
+        shell: bash
+        working-directory: _source/Kalle-Chaosbuddy-3.1.0
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace :app:assembleDebug 2>&1 | tee /tmp/kalle306-build.log
+
+      - name: Run Android unit tests
+        id: unit
+        continue-on-error: true
+        shell: bash
+        working-directory: _source/Kalle-Chaosbuddy-3.1.0
+        run: |
+          set -euo pipefail
+          ./gradlew --no-daemon :app:testDebugUnitTest 2>&1 | tee /tmp/kalle306-tests.log
+
+      - name: Validate signed APK and package name
+        shell: bash
+        working-directory: _source/Kalle-Chaosbuddy-3.1.0
+        run: |
+          set -euo pipefail
+          apk=app/build/outputs/apk/debug/app-debug.apk
+          test -s "$apk"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$apk"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$apk" | tee /tmp/kalle306-badging.txt
+          grep -F "package: name='de.boyka.kallebuddy.test306' versionCode='30011'" /tmp/kalle306-badging.txt
+          mkdir -p dist
+          cp "$apk" dist/Kalle-Chaosbuddy-3.0.6-TEST.apk
+          sha256sum dist/*.apk > dist/SHA256SUMS.txt
+
+      - name: Upload downloadable APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kalle-Chaosbuddy-3.0.6-TEST-APK
+          path: _source/Kalle-Chaosbuddy-3.1.0/dist/
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Publish APK as downloadable release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          apk=_source/Kalle-Chaosbuddy-3.1.0/dist/Kalle-Chaosbuddy-3.0.6-TEST.apk
+          if gh release view kalle-chaosbuddy-306-test >/dev/null 2>&1; then
+            gh release upload kalle-chaosbuddy-306-test "$apk" --clobber
+          else
+            gh release create kalle-chaosbuddy-306-test "$apk" --title "Kalle Chaosbuddy 3.0.6 TEST" --notes "Debug-signierte separate Test-App (de.boyka.kallebuddy.test306). Bestehende Kalle-Version bleibt unangetastet. Keine echte In-Place-Aktualisierung. Aufgabentransfer auf morgen und 10-Minuten-Erinnerung nach 30 Minuten Aufschub. Test der Android-Berechtigungen auf dem eigenen Gerät erforderlich."
+          fi
+
+      - name: Summary
+        if: always()
+        shell: bash
+        env:
+          UNIT_OUTCOME: ${{ steps.unit.outcome }}
+        run: |
+          echo "Build of separate Kalle 3.0.6 APK; never sign with private release credentials." >> "$GITHUB_STEP_SUMMARY"
+          echo "Android unit tests: $UNIT_OUTCOME." >> "$GITHUB_STEP_SUMMARY"
+          echo "Android 15 reminder cadence may be delayed by Doze or notification permissions." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload compile logs if build fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kalle-306-Builddiagnose
+          path: |
+            /tmp/kalle306-build.log
+            /tmp/kalle306-badging.txt
+          if-no-files-found: ignore
+          retention-days: 7
